@@ -11,32 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Distribution name on PyPI: `elementwise-udf`. Import name: `elementwise_udf`.
 
-## [Unreleased]
-
-### Added
-- _Nothing yet._
-
-## [0.1.0] - 2026-08-05
-
-### Added
-- `elementwise_udf.functions`, a drop-in for `pyspark.sql.functions`. Every name
-  is delegated to the real module; `esf.udf` builds a UDF that may be called
-  inside a native higher-order function's lambda, which Spark otherwise rejects
-  ([SPARK-27052](https://issues.apache.org/jira/browse/SPARK-27052)), and such a
-  call is rewritten so the UDF sits outside the lambda. Nothing in PySpark is
-  patched, and lambdas using no element-wise UDF are forwarded untouched.
-- Support for every array and map higher-order function: `transform`, `filter`,
-  `exists`, `forall`, `zip_with`, `aggregate`, `reduce`, `array_sort`,
-  `sort_array`, `transform_keys`, `transform_values`, `map_filter` and
-  `map_zip_with`.
-- Arbitrary expressions around a UDF result - arithmetic, `esf.when`, casts,
-  comparisons with other columns, the element index, nested UDF calls, several
-  UDFs in one lambda, and UDF arguments that are themselves expressions over the
-  element.
-- Verified on classic PySpark and Spark Connect (including Databricks Connect
-  serverless), across Spark 4.0, 4.1 and 4.2: 264 tests per session mode, 99%
-  statement coverage.
-
 <!--
 Release runbook:
 
@@ -55,3 +29,41 @@ Release runbook:
   Dry run without touching PyPI: run the `release` workflow manually with
   dry_run=build-only, or dry_run=testpypi to upload to TestPyPI via OIDC.
 -->
+
+## [Unreleased]
+
+### Added
+- _Nothing yet._
+
+## [0.1.0] - 2026-08-05
+
+### Added
+- `elementwise_udf.functions`, a drop-in for `pyspark.sql.functions`. Every name
+  is delegated to the real module; `esf.udf` builds a UDF that may be called
+  inside a native higher-order function's lambda, which Spark otherwise rejects
+  ([SPARK-27052](https://issues.apache.org/jira/browse/SPARK-27052)), and such a
+  call is rewritten so the UDF sits outside the lambda. Nothing in PySpark is
+  patched, and lambdas using no element-wise UDF are forwarded untouched.
+- Support for every higher-order function PySpark has, meaning every function
+  taking a lambda: `transform`, `filter`, `exists`, `forall`, `zip_with`,
+  `aggregate`, `reduce`, `array_sort`, `transform_keys`, `transform_values`,
+  `map_filter` and `map_zip_with`. For a fold, a UDF may be in the `merge`
+  lambda, the `finish` lambda, or both.
+- Arbitrary expressions around a UDF result - arithmetic, `esf.when`, casts,
+  comparisons with other columns, the element index, nested UDF calls, several
+  UDFs in one lambda, and UDF arguments that are themselves expressions over the
+  element.
+- `pyspark` is not a hard dependency: the package is installed into an existing
+  Spark environment that provides its own. The `spark` and `connect` extras pull
+  one in for local use.
+
+### Notes
+- Two shapes cannot be precomputed, because the value the UDF needs does not
+  exist until the higher-order function is already running. Both work by moving
+  the whole operation into one Python call per row, and both warn
+  (`RuntimeWarning`): a UDF on `aggregate`'s accumulator, and a genuinely
+  pairwise comparator. Applying the UDF to the element keeps it on the fast path.
+- Verified on classic PySpark and Spark Connect (including Databricks Connect
+  serverless), across Spark 4.0, 4.1 and 4.2: 271 tests per session mode, 99%
+  statement coverage.
+
