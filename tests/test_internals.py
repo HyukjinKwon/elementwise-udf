@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from elementwise_udf import udf, functions as F
+import elementwise_udf.functions as esf
 from elementwise_udf import _core
 
 # ============================================================================
@@ -21,13 +21,13 @@ from elementwise_udf import _core
 
 def test_uses_elementwise_detects_direct_udf():
     """_uses_elementwise returns True for a direct UDF."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     assert _core._uses_elementwise(plus_one) is True
 
 
 def test_uses_elementwise_detects_udf_in_closure():
     """_uses_elementwise returns True when a UDF is closed over."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def uses_it(x):
         return plus_one(x)
@@ -84,7 +84,7 @@ def test_uses_elementwise_with_empty_closure_cell():
 
 def test_reaches_detects_udf_in_names():
     """_reaches returns True when the code references a global UDF."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     # Use co_names from actual code that references plus_one.
     func_code = compile("plus_one(x)", "<test>", "eval")
     globs = {"plus_one": plus_one}
@@ -93,7 +93,7 @@ def test_reaches_detects_udf_in_names():
 
 def test_reaches_detects_udf_in_nested_code():
     """_reaches recursively checks nested code objects (comprehensions, lambdas)."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     # List comprehensions have nested code objects.
     func_code = compile("[plus_one(i) for i in [1, 2]]", "<test>", "eval")
     globs = {"plus_one": plus_one}
@@ -109,7 +109,7 @@ def test_reaches_ignores_non_udf_globals():
 
 def test_plain_lambda_unwraps_elementwise_udf_in_closure():
     """_plain_lambda replaces UDFs with their underlying functions."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def uses_it(x):
         return plus_one(x)
@@ -133,7 +133,7 @@ def test_plain_lambda_preserves_non_udf_closure():
 
 def test_plain_lambda_with_udf_in_globals():
     """_plain_lambda replaces UDFs in globals."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     # Create a simple function that uses plus_one.
     globs = {"plus_one": plus_one}
@@ -147,8 +147,8 @@ def test_plain_lambda_with_udf_in_globals():
 
 
 def test_as_lambda_wraps_udf_as_element_mapper():
-    """_as_lambda wraps a bare UDF as lambda x: udf(x)."""
-    plus_one = udf(lambda x: x + 1, "long")
+    """_as_lambda wraps a bare UDF as lambda x: esf.udf(x)."""
+    plus_one = esf.udf(lambda x: x + 1, "long")
     wrapped = _core._as_lambda(plus_one)
     # Should be callable.
     assert callable(wrapped)
@@ -190,20 +190,20 @@ def test_over_probe_with_multiple_probes(spark):
 
 def test_elementwise_udf_evaltype_property(spark):
     """_ElementwiseUDF.evalType delegates to scalar."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     # evalType should be an integer (not accessed in public tests).
     assert isinstance(plus_one.evalType, int)
 
 
 def test_elementwise_udf_deterministic_property(spark):
     """_ElementwiseUDF.deterministic delegates to scalar."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     assert plus_one.deterministic is True
 
 
 def test_elementwise_udf_asNondeterministic_returns_new_instance(spark):
     """asNondeterministic creates a new UDF with nondeterministic scalar."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     nondeterministic = plus_one.asNondeterministic()
     assert nondeterministic is not plus_one
     assert nondeterministic.deterministic is False
@@ -212,7 +212,7 @@ def test_elementwise_udf_asNondeterministic_returns_new_instance(spark):
 
 def test_elementwise_udf_bind_with_no_kwargs():
     """_bind returns args unchanged when no kwargs."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     result = plus_one._bind((5,), {})
     assert result == (5,)
 
@@ -220,7 +220,7 @@ def test_elementwise_udf_bind_with_no_kwargs():
 def test_elementwise_udf_bind_with_kwargs():
     """_bind converts kwargs to positional args."""
 
-    @udf("long")
+    @esf.udf("long")
     def func(a, b, c=3):
         return a + b + c
 
@@ -231,7 +231,7 @@ def test_elementwise_udf_bind_with_kwargs():
 
 def test_elementwise_udf_over_array_with_constant_only(spark):
     """over_array handles the case where all args are constants."""
-    plus_ten = udf(lambda: 10, "long")
+    plus_ten = esf.udf(lambda: 10, "long")
     arrays = []
     consts = []
     plan = []
@@ -246,7 +246,7 @@ def test_elementwise_udf_over_array_returns_array_udf(spark):
     """over_array creates a UDF returning array<returnType>."""
     from pyspark.sql.types import ArrayType, LongType
 
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     arrays = [_core._F.col("test")]
     consts = []
     plan = [0]
@@ -263,7 +263,7 @@ def test_elementwise_udf_over_array_returns_array_udf(spark):
 
 def test_recorder_on_call_record_mode(spark):
     """Recorder.on_call in record mode appends the call."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     rec = _core._Recorder()
     rec.mode = "record"
 
@@ -279,7 +279,7 @@ def test_recorder_on_call_record_mode(spark):
 
 def test_recorder_on_call_substitute_mode(spark):
     """Recorder.on_call in substitute mode retrieves from substitutions."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     rec = _core._Recorder()
     rec.mode = "substitute"
     rec.index = 0
@@ -292,7 +292,7 @@ def test_recorder_on_call_substitute_mode(spark):
 
 def test_recorder_on_call_substitute_mode_index_mismatch(spark):
     """Recorder.on_call raises when substitute index is out of bounds."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     rec = _core._Recorder()
     rec.mode = "substitute"
     rec.index = 5
@@ -304,7 +304,7 @@ def test_recorder_on_call_substitute_mode_index_mismatch(spark):
 
 def test_run_sets_active_recorder(spark):
     """_run sets and restores the global _active recorder."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     rec = _core._Recorder()
 
     original_active = _core._active
@@ -323,7 +323,7 @@ def test_run_sets_active_recorder(spark):
 
 def test_rewrite_returns_none_for_no_columns(spark):
     """_rewrite returns None if no columns are found in args."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def f(x):
         return plus_one(x)
@@ -366,7 +366,7 @@ def test_rewrite_returns_none_when_lambda_raises_typeerror(spark):
 
 def test_rewrite_with_string_column_name(spark):
     """_rewrite handles string column names."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def f(x):
         return plus_one(x)
@@ -378,8 +378,8 @@ def test_rewrite_with_string_column_name(spark):
 
 
 def test_udf_decorator_with_return_type_only():
-    """udf(returnType) returns a decorator."""
-    decorator = udf("long")
+    """esf.udf(returnType) returns a decorator."""
+    decorator = esf.udf("long")
     assert callable(decorator)
 
     @decorator
@@ -390,29 +390,29 @@ def test_udf_decorator_with_return_type_only():
 
 
 def test_udf_decorator_called_with_string_return_type():
-    """udf("returnType") recognizes a string as a return type."""
-    result = udf("long")
+    """esf.udf("returnType") recognizes a string as a return type."""
+    result = esf.udf("long")
     assert callable(result)
 
 
 def test_udf_decorator_called_with_datatype():
-    """udf(DataType()) recognizes a DataType as a return type."""
+    """esf.udf(DataType()) recognizes a DataType as a return type."""
     from pyspark.sql.types import LongType
 
-    result = udf(LongType())
+    result = esf.udf(LongType())
     assert callable(result)
 
 
 def test_udf_decorator_with_function_and_type():
-    """udf(func, type) creates a UDF directly."""
-    plus_one = udf(lambda x: x + 1, "long")
+    """esf.udf(func, type) creates a UDF directly."""
+    plus_one = esf.udf(lambda x: x + 1, "long")
     assert isinstance(plus_one, _core._ElementwiseUDF)
 
 
 def test_udf_bare_decorator():
-    """udf without arguments defaults to string return type."""
+    """eudf without arguments defaults to string return type."""
 
-    @udf
+    @esf.udf
     def stringify(x):
         return str(x)
 
@@ -421,7 +421,7 @@ def test_udf_bare_decorator():
 
 def test_rewrite_with_index_parameter(spark):
     """_rewrite handles lambdas with index parameters."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def f(x, i):
         return plus_one(x) + i
@@ -433,7 +433,7 @@ def test_rewrite_with_index_parameter(spark):
 
 def test_rewrite_with_expression_as_argument(spark):
     """_rewrite precomputes expressions over the element."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def f(x):
         return plus_one(x * 10)
@@ -447,7 +447,7 @@ def test_rewrite_with_captured_column(spark):
     """_rewrite handles UDF arguments that are captured columns."""
     from pyspark.sql.types import LongType
 
-    @udf(LongType())
+    @esf.udf(LongType())
     def add_n(x, n):
         return x + n
 
@@ -464,8 +464,8 @@ def test_rewrite_with_captured_column(spark):
 
 def test_rewrite_with_nested_udf_calls(spark):
     """_rewrite handles nested UDF calls."""
-    plus_one = udf(lambda x: x + 1, "long")
-    times_two = udf(lambda x: x * 2, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
+    times_two = esf.udf(lambda x: x * 2, "long")
 
     def f(x):
         return plus_one(times_two(x))
@@ -489,7 +489,7 @@ def test_udf_arrays_returns_none_for_no_calls(spark):
 
 def test_udf_arrays_returns_recorder_and_mapped(spark):
     """_udf_arrays returns (recorder, mapped) on success."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     probes = [_core._F.col("__ew_probe_0__")]
     sources = [_core._F.col("v")]
 
@@ -579,7 +579,7 @@ def test_runs_in_plain_python_finish_raises():
 
 def test_rewrite_comparator_with_pairwise_comparison(spark):
     """_rewrite_comparator falls back to pairwise when both elements are used."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def cmp(a, b):
         # Both a and b are passed to the UDF - pairwise.
@@ -593,7 +593,7 @@ def test_rewrite_comparator_with_pairwise_comparison(spark):
 
 def test_rewrite_comparator_with_element_wise_keys(spark):
     """_rewrite_comparator works with per-element keys."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def cmp(a, b):
         # Only a is used - per-element key comparison.
@@ -622,7 +622,7 @@ def test_rewrite_pairwise_creates_rank_udf(spark):
     references an undefined variable 'compare' instead of using udf.func.__name__.
     """
     compare_func = lambda a, b: a - b
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     col = _core._F.col("v")
     result = _core._rewrite_pairwise("array_sort", col, None, plus_one)
@@ -631,7 +631,7 @@ def test_rewrite_pairwise_creates_rank_udf(spark):
 
 def test_rewrite_fold_with_element_udf(spark):
     """_rewrite_fold handles UDFs on the element (not accumulator)."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def f(acc, x):
         return acc + plus_one(x)
@@ -643,7 +643,7 @@ def test_rewrite_fold_with_element_udf(spark):
 
 def test_rewrite_fold_with_accumulator_udf(spark):
     """_rewrite_fold falls back to fold_in_python for UDFs on accumulator."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def f(acc, x):
         return plus_one(acc) + x
@@ -666,7 +666,7 @@ def test_rewrite_fold_returns_none_no_udf_calls(spark):
 
 def test_rewrite_fold_in_python_with_finish(spark):
     """_rewrite_fold_in_python handles a finish lambda."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def merge(acc, x):
         return acc + plus_one(x)
@@ -683,10 +683,10 @@ def test_rewrite_fold_in_python_with_finish(spark):
 
 def test_rewrite_fold_in_python_accumulator_udf_with_spark_expr_raises(spark):
     """_rewrite_fold_in_python raises if merge uses Spark expressions."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def merge(acc, x):
-        # Uses F.when, which returns a Column.
+        # Uses esf.when, which returns a Column.
         return _core._F.when(_core._F.lit(plus_one(acc) > 2), plus_one(acc)).otherwise(0) + x
 
     col = _core._F.col("v")
@@ -725,7 +725,7 @@ def test_rewrite_map_returns_none_no_udf_calls(spark):
 
 def test_rewrite_map_with_transform_keys(spark):
     """_rewrite_map handles transform_keys."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def f(k, v):
         return plus_one(k)
@@ -737,7 +737,7 @@ def test_rewrite_map_with_transform_keys(spark):
 
 def test_rewrite_map_with_transform_values(spark):
     """_rewrite_map handles transform_values."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def f(k, v):
         return plus_one(v)
@@ -750,7 +750,7 @@ def test_rewrite_map_with_transform_values(spark):
 def test_rewrite_map_with_map_filter(spark):
     """_rewrite_map handles map_filter."""
 
-    @udf("boolean")
+    @esf.udf("boolean")
     def keep(v):
         return v > 2
 
@@ -786,7 +786,7 @@ def test_rewrite_map_zip_returns_none_no_udf_calls(spark):
 
 def test_rewrite_map_zip_with_udf(spark):
     """_rewrite_map_zip handles UDFs in map_zip_with."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def f(k, v1, v2):
         return plus_one(v1)
@@ -800,42 +800,52 @@ def test_rewrite_map_zip_with_udf(spark):
 def test_functions_proxy_forwards_to_pyspark(spark):
     """The functions proxy forwards unknown attributes to pyspark.sql.functions."""
     # should not raise
-    assert callable(F.lit)
-    assert callable(F.col)
+    assert callable(esf.lit)
+    assert callable(esf.col)
 
 
 def test_functions_proxy_caches_wrapped_functions(spark):
     """The functions proxy caches wrapped higher-order functions."""
     # First access
-    transform1 = F.transform
+    transform1 = esf.transform
     # Second access should return the same cached function
-    transform2 = F.transform
+    transform2 = esf.transform
     assert transform1 is transform2
 
 
 def test_functions_proxy_handles_private_attributes(spark):
     """The functions proxy does not wrap private attributes."""
     # Private attributes are forwarded directly, not wrapped.
-    assert hasattr(F, "_spark_internal") or True  # Just ensure it doesn't crash
+    assert hasattr(esf, "_spark_internal") or True  # Just ensure it doesn't crash
 
 
-def test_functions_proxy_multiple_lambdas_error(spark):
-    """The functions proxy raises if multiple lambdas use UDFs (outside folds)."""
-    plus_one = udf(lambda x: x + 1, "long")
+def test_functions_proxy_rewrites_a_folds_merge_not_its_finish(spark):
+    """Only ``merge`` iterates the array, so only it is rewritten.
 
-    def f1(x):
-        return plus_one(x)
+    ``aggregate`` and ``reduce`` are the only two-lambda functions PySpark has.
+    A UDF in ``finish`` runs once on the final accumulator and is applied to the
+    fold's result instead.
+    """
+    plus_one = esf.udf(lambda x: x + 1, "long")
+    df = spark.createDataFrame([([1, 2],)], "v array<int>")
+    zero = esf.lit(0).cast("long")
 
-    def f2(x):
-        return plus_one(x)
+    merge_only = df.select(esf.aggregate("v", zero, lambda a, x: a + plus_one(x))).collect()
+    finish_only = df.select(
+        esf.aggregate("v", zero, lambda a, x: a + x, lambda a: plus_one(a))
+    ).collect()
+    both = df.select(
+        esf.aggregate("v", zero, lambda a, x: a + plus_one(x), lambda a: plus_one(a))
+    ).collect()
 
-    with pytest.raises(TypeError, match="more than one lambda"):
-        F.map_zip_with("m1", "m2", f1, f2)
+    assert [r[0] for r in merge_only] == [5]  # 0 + 2 + 3
+    assert [r[0] for r in finish_only] == [4]  # plus_one(0 + 1 + 2)
+    assert [r[0] for r in both] == [6]  # plus_one(5)
 
 
 def test_functions_proxy_accepts_kwargs(spark):
     """The functions proxy does not rewrite when kwargs are present."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def f(x):
         return plus_one(x)
@@ -843,7 +853,7 @@ def test_functions_proxy_accepts_kwargs(spark):
     # Passing an unsupported kwarg should cause the native function to reject it,
     # not the proxy (the proxy checks 'not kwargs').
     with pytest.raises(TypeError, match="unexpected keyword argument"):
-        F.transform("v", f, extra_kwarg=True)
+        esf.transform("v", f, extra_kwarg=True)
 
 
 def test_plain_lambda_empty_closure():
@@ -855,7 +865,7 @@ def test_plain_lambda_empty_closure():
 
 def test_plain_lambda_with_nested_function():
     """_plain_lambda recursively handles nested functions in globals."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def outer():
         def inner(x):
@@ -877,7 +887,7 @@ def test_plain_lambda_with_nested_function():
 
 def test_direct_mode_calls_underlying_function(spark):
     """When _direct flag is set, __call__ invokes the underlying function."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     original_direct = _core._direct
     try:
         _core._direct = True
@@ -890,8 +900,8 @@ def test_direct_mode_calls_underlying_function(spark):
 
 def test_nested_udf_argument_uses_mapped_result(spark):
     """_rewrite handles nested UDF calls where inner result is used as outer argument."""
-    plus_one = udf(lambda x: x + 1, "long")
-    times_two = udf(lambda x: x * 2, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
+    times_two = esf.udf(lambda x: x * 2, "long")
 
     def f(x):
         return times_two(plus_one(x))
@@ -904,8 +914,8 @@ def test_nested_udf_argument_uses_mapped_result(spark):
 
 def test_udf_arrays_with_nested_udf_calls(spark):
     """_udf_arrays handles nested UDF composition."""
-    plus_one = udf(lambda x: x + 1, "long")
-    times_two = udf(lambda x: x * 2, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
+    times_two = esf.udf(lambda x: x * 2, "long")
     probes = [_core._F.col("__ew_probe_0__")]
     sources = [_core._F.col("v")]
 
@@ -936,7 +946,7 @@ def test_plain_lambda_handles_empty_closure_cells(spark):
 
 def test_plain_lambda_with_udf_and_other_closure(spark):
     """_plain_lambda distinguishes between UDFs and other closure values."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     factor = 10
 
     def uses_both(x):
@@ -955,7 +965,7 @@ def test_plain_lambda_with_udf_and_other_closure(spark):
 
 def test_rewrite_fold_with_no_init(spark):
     """_rewrite_fold_in_python handles missing init value."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def merge(acc, x):
         return acc + plus_one(x)
@@ -968,7 +978,7 @@ def test_rewrite_fold_with_no_init(spark):
 
 def test_rewrite_fold_in_python_with_null_values(spark):
     """_rewrite_fold_in_python returns None when array values are None."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def merge(acc, x):
         return acc + x
@@ -987,7 +997,7 @@ def test_rewrite_pairwise_with_null_array(spark):
     NOTE: This test exposes a bug in _core.py line 649 where _rewrite_pairwise
     references an undefined variable 'compare' instead of using udf.func.__name__.
     """
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     col = _core._F.col("v")
     result = _core._rewrite_pairwise("array_sort", col, None, plus_one)
@@ -998,7 +1008,7 @@ def test_rewrite_pairwise_with_null_array(spark):
 def test_udf_arrays_with_constant_only_argument(spark):
     """_udf_arrays can handle UDFs applied to constants only."""
 
-    @udf("long")
+    @esf.udf("long")
     def add_n(x, n):
         return x + n
 
@@ -1016,19 +1026,19 @@ def test_udf_arrays_with_constant_only_argument(spark):
 def test_elementwise_udf_with_udf_decorator(spark):
     """Test the udf decorator recognizes both function and return type forms."""
     # Form 1: decorator with return type only
-    decorator1 = udf("long")
+    decorator1 = esf.udf("long")
 
     @decorator1
     def plus_one_v1(x):
         return x + 1
 
     # Form 2: bare decorator
-    @udf
+    @esf.udf
     def stringify_v2(x):
         return str(x)
 
     # Form 3: direct call with function and type
-    plus_one_v3 = udf(lambda x: x + 1, "long")
+    plus_one_v3 = esf.udf(lambda x: x + 1, "long")
 
     # All three should be ElementwiseUDF instances.
     assert isinstance(plus_one_v1, _core._ElementwiseUDF)
@@ -1038,7 +1048,7 @@ def test_elementwise_udf_with_udf_decorator(spark):
 
 def test_udf_with_useArrow_parameter(spark):
     """Test the udf decorator with useArrow parameter."""
-    arrow_udf = udf(lambda x: x + 1, "long", useArrow=True)
+    arrow_udf = esf.udf(lambda x: x + 1, "long", useArrow=True)
     assert isinstance(arrow_udf, _core._ElementwiseUDF)
     # Just ensure it doesn't crash; actually using Arrow depends on Spark config.
 
@@ -1046,7 +1056,7 @@ def test_udf_with_useArrow_parameter(spark):
 def test_as_lambda_with_udf_truncates_to_parameter_count(spark):
     """_as_lambda ensures lambda signature matches UDF parameter count."""
 
-    @udf("long")
+    @esf.udf("long")
     def add(x, y):
         return x + y
 
@@ -1071,12 +1081,12 @@ def test_uses_elementwise_returns_false_for_non_udf_lambda():
 def test_functions_proxy_passes_through_non_callable(spark):
     """The functions proxy forwards non-callable attributes directly."""
     # Getting a type/enum should work.
-    assert hasattr(F, "ArrayType") or True  # Just ensure no crash.
+    assert hasattr(esf, "ArrayType") or True  # Just ensure no crash.
 
 
 def test_rewrite_with_all_constant_arguments(spark):
     """Test rewrite when a UDF receives only constant arguments."""
-    plus_ten = udf(lambda c: c + 10, "long")
+    plus_ten = esf.udf(lambda c: c + 10, "long")
 
     def f(x):
         return plus_ten(_core._F.lit(5))
@@ -1090,7 +1100,7 @@ def test_rewrite_with_all_constant_arguments(spark):
 def test_udf_arrays_with_all_constants(spark):
     """_udf_arrays with UDF applied only to constants."""
 
-    @udf("long")
+    @esf.udf("long")
     def const_func(x):
         return x * 2
 
@@ -1107,7 +1117,7 @@ def test_udf_arrays_with_all_constants(spark):
 def test_rewrite_with_multi_array_case(spark):
     """Test rewrite that collapses multi-array case (e.g., zip_with)."""
 
-    @udf("long")
+    @esf.udf("long")
     def add(a, b):
         return a + b
 
@@ -1135,7 +1145,7 @@ def test_rewrite_preserves_non_element_wise_lambda(spark):
 
 def test_rewrite_with_string_column(spark):
     """Test rewrite works with string column names."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def f(x):
         return plus_one(x)
@@ -1147,7 +1157,7 @@ def test_rewrite_with_string_column(spark):
 
 def test_rewrite_fold_with_both_init_and_finish(spark):
     """_rewrite_fold with both init and finish lambdas."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def merge(acc, x):
         return acc + plus_one(x)
@@ -1164,7 +1174,7 @@ def test_rewrite_fold_with_both_init_and_finish(spark):
 
 def test_rewrite_comparator_uses_left_element_only(spark):
     """_rewrite_comparator when comparator only uses left element."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def cmp(a, b):
         # Only left element (a) is used.
@@ -1177,7 +1187,7 @@ def test_rewrite_comparator_uses_left_element_only(spark):
 
 def test_rewrite_comparator_uses_right_element_only(spark):
     """_rewrite_comparator when comparator only uses right element."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
 
     def cmp(a, b):
         # Only right element (b) is used.
@@ -1191,7 +1201,7 @@ def test_rewrite_comparator_uses_right_element_only(spark):
 def test_rewrite_map_with_all_keys(spark):
     """Test rewrite for transform_keys with UDF on keys only."""
 
-    @udf("long")
+    @esf.udf("long")
     def key_transform(k):
         return k + 1
 
@@ -1206,7 +1216,7 @@ def test_rewrite_map_with_all_keys(spark):
 def test_rewrite_map_zip_with_all_three_params(spark):
     """Test map_zip_with using all three parameters."""
 
-    @udf("string")
+    @esf.udf("string")
     def combine(k, v1, v2):
         return f"{k}-{v1}-{v2}"
 
@@ -1221,7 +1231,7 @@ def test_rewrite_map_zip_with_all_three_params(spark):
 
 def test_elementwise_udf_scalar_lazy_initialization(spark):
     """The scalar UDF is lazily initialized on first access."""
-    plus_one = udf(lambda x: x + 1, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
     # Initially, _scalar should be None.
     assert plus_one._scalar is None
     # Access scalar property.
@@ -1234,8 +1244,8 @@ def test_elementwise_udf_scalar_lazy_initialization(spark):
 
 def test_plain_lambda_with_multiple_udfs_in_closure(spark):
     """_plain_lambda handles multiple UDFs in the closure."""
-    plus_one = udf(lambda x: x + 1, "long")
-    times_two = udf(lambda x: x * 2, "long")
+    plus_one = esf.udf(lambda x: x + 1, "long")
+    times_two = esf.udf(lambda x: x * 2, "long")
 
     def uses_both(x):
         return plus_one(x) + times_two(x)
@@ -1393,7 +1403,7 @@ def test_uses_elementwise_tolerates_an_empty_closure_cell():
 def test_udf_argument_expression_together_with_the_index(spark):
     # Exercises the index field of the carrier struct while a UDF argument also
     # needs precomputing: both the "ix" branches at once.
-    plus = udf(lambda a, b: a + b, "long")
+    plus = esf.udf(lambda a, b: a + b, "long")
     df = spark.createDataFrame([([10, 20],)], "v array<int>")
-    got = df.select(F.transform("v", lambda x, i: plus(x * 2, i))).collect()
+    got = df.select(esf.transform("v", lambda x, i: plus(x * 2, i))).collect()
     assert [r[0] for r in got] == [[20, 41]]

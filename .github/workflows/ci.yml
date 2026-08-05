@@ -162,10 +162,26 @@ jobs:
           pip install "build==1.2.2"
           python -m build --sdist --wheel --outdir dist
           ls -la dist
-      - name: install + import the wheel
+      - name: assert the wheel declares no hard dependency
+        # pyspark must stay behind an extra: the package is installed into an
+        # existing Spark environment that already provides its own.
         run: |
           set -euxo pipefail
           pip install dist/elementwise_udf-*.whl
+          python - <<'PY'
+          import importlib.metadata as m
+
+          reqs = m.requires("elementwise-udf") or []
+          hard = [r for r in reqs if "extra ==" not in r]
+          assert not hard, f"wheel declares hard dependencies: {hard}"
+          print("OK: every requirement is behind an extra")
+          PY
+      - name: install pyspark, then import the wheel
+        # The import needs pyspark, exactly as a real user's environment has it;
+        # the previous step already proved pip does not pull one in by itself.
+        run: |
+          set -euxo pipefail
+          pip install "pyspark[connect]>=4.0"
           python -c "
           from elementwise_udf import udf, functions
           print('import OK', udf.__name__, type(functions).__name__)

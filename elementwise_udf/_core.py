@@ -702,6 +702,34 @@ def _rewrite_fold(name: str, args: Sequence[Any], fun_pos: int, f: Callable) -> 
     return getattr(_F, name)(*new_args)
 
 
+def _rewrite_fold_with_finish(
+    name: str,
+    args: Sequence[Any],
+    lambdas: Sequence[int],
+    using: Sequence[int],
+    original: Callable[..., Column],
+) -> Column:
+    """Rewrite ``aggregate(col, init, merge, finish)`` when a UDF is in either.
+
+    ``merge`` is the only lambda that iterates the array, so it alone goes
+    through the element-wise rewrite. ``finish`` runs once on the final
+    accumulator, which is an ordinary column by then, so a UDF there needs no
+    rewriting at all: applying it to the fold's result is exactly equivalent, and
+    keeps the UDF outside every lambda.
+    """
+    merge_pos, finish_pos = lambdas[0], lambdas[1]
+    folded: Column
+    if merge_pos in using:
+        # Fold without the finish lambda, rewriting merge, then finish outside.
+        without_finish = [a for i, a in enumerate(args) if i != finish_pos]
+        merge_at = merge_pos if merge_pos < finish_pos else merge_pos - 1
+        rewritten = _rewrite(name, without_finish, merge_at, _as_lambda(args[merge_pos]))
+        folded = rewritten if rewritten is not None else original(*without_finish)
+    else:
+        folded = original(*[a for i, a in enumerate(args) if i != finish_pos])
+    return args[finish_pos](folded)
+
+
 def _rewrite_fold_in_python(
     name: str,
     args: Sequence[Any],
@@ -932,43 +960,36 @@ def _as_lambda(f: Any) -> Callable:
     return f
 
 
-class _Functions:
-    """Drop-in proxy for ``pyspark.sql.functions``."""
+def wrap_function(name: str) -> Any:
+    """One ``pyspark.sql.functions`` attribute, ready to stand in for it.
 
-    def __getattr__(self, name: str) -> Any:
-        attr = getattr(_F, name)
-        if not callable(attr) or name.startswith("_"):
-            return attr
+    Non-callables are returned as they are. A callable is wrapped so that, if the
+    call turns out to be a higher-order function whose lambda uses an
+    element-wise UDF, it can be rewritten; otherwise the arguments are forwarded
+    untouched. ``pyspark.sql.functions`` itself is never modified.
+    """
+    attr = getattr(_F, name)
+    if not callable(attr) or name.startswith("_"):
+        return attr
 
-        @functools.wraps(attr)
-        def maybe_hof(*args: Any, **kwargs: Any) -> Any:
-            lambdas = [
-                i
-                for i, a in enumerate(args)
-                if isinstance(a, _ElementwiseUDF)
-                or (callable(a) and not isinstance(a, (Column, str)))
-            ]
-            using = [i for i in lambdas if _uses_elementwise(args[i])]
-            if using and not kwargs:
-                # A fold legitimately takes a second (finish) lambda, which the
-                # fold rewrites handle; anywhere else two lambdas have no
-                # element-wise reading.
-                if len(lambdas) > 1 and name not in _FOLDS:
-                    raise TypeError(
-                        f"{name} takes more than one lambda; only one can use an "
-                        f"element-wise UDF. Apply the UDF to the array first, "
-                        f"then call {name} on the result."
-                    )
-                out = _rewrite(name, args, using[0], _as_lambda(args[using[0]]))
-                if out is not None:
-                    return out
-            return attr(*args, **kwargs)
+    @functools.wraps(attr)
+    def maybe_hof(*args: Any, **kwargs: Any) -> Any:
+        lambdas = [
+            i
+            for i, a in enumerate(args)
+            if isinstance(a, _ElementwiseUDF) or (callable(a) and not isinstance(a, (Column, str)))
+        ]
+        using = [i for i in lambdas if _uses_elementwise(args[i])]
+        if using and not kwargs:
+            # A fold takes (merge, finish). Only ``merge`` iterates the array, so
+            # that is the lambda to rewrite; a UDF in ``finish`` runs once on the
+            # final accumulator and is handled separately. Every other
+            # higher-order function takes a single lambda.
+            if name in _FOLDS and len(lambdas) > 1:
+                return _rewrite_fold_with_finish(name, args, lambdas, using, attr)
+            out = _rewrite(name, args, using[0], _as_lambda(args[using[0]]))
+            if out is not None:
+                return out
+        return attr(*args, **kwargs)
 
-        setattr(self, name, maybe_hof)  # Cached: later lookups reuse it.
-        return maybe_hof
-
-    def __dir__(self) -> List[str]:
-        return dir(_F)
-
-
-functions = _Functions()
+    return maybe_hof
