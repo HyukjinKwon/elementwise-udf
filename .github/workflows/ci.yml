@@ -71,7 +71,18 @@ jobs:
       - name: pytest
         env:
           SPARK_MODE: ${{ matrix.spark-mode }}
-        run: pytest -q --cov=elementwise_udf --cov-report=term-missing --cov-fail-under=85
+        run: >
+          pytest -q --cov=elementwise_udf --cov-branch
+          --cov-report=term-missing --cov-report=xml --cov-fail-under=95
+      - name: Upload coverage to Codecov
+        # One representative cell only: every cell runs the same tests, so
+        # uploading all of them would just be noise. No token needed for a
+        # public repo; a failed upload must not fail the build.
+        if: matrix.spark == '4.2.0' && matrix.spark-mode == 'classic' && matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
 
   lint:
     name: black --check

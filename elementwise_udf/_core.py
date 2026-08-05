@@ -19,8 +19,8 @@ written::
 
     df.select(F.transform("values", lambda x: plus_one(x)).alias("result"))
 
-The rejection is on the plan shape -- any Python UDF inside a ``lambdafunction``
-node is refused -- so the UDF has to be lifted out of the lambda. That is done
+The rejection is on the plan shape - any Python UDF inside a ``lambdafunction``
+node is refused - so the UDF has to be lifted out of the lambda. That is done
 by rewriting the call from outside::
 
     zipped = F.arrays_zip(col.alias("c0"), plus_one_over_array(col).alias("u0"))
@@ -50,7 +50,7 @@ mapping are reduced to that case:
 ``aggregate`` / ``reduce``
     The UDF is precomputed over the element array and the fold then runs over the
     zipped elements. A ``finish`` lambda is supported.
-``array_sort`` / ``sort_array``
+``array_sort``
     The UDF becomes a sort *key*, computed once per element; the JVM comparator
     then compares precomputed keys.
 ``transform_keys`` / ``transform_values`` / ``map_filter``
@@ -68,7 +68,7 @@ the *whole* operation into one Python call per row, and each warns
 * A UDF applied to ``aggregate``'s *accumulator*, which only exists between fold
   steps. The entire fold runs in Python, calling the UDF once per element
   sequentially.
-* A comparator passing *both* elements to one UDF call -- a genuinely pairwise
+* A comparator passing *both* elements to one UDF call - a genuinely pairwise
   decision. The whole sort runs in Python to produce per-element ranks, calling
   the UDF O(n log n) times, and native ``array_sort`` then orders by rank.
 
@@ -76,7 +76,7 @@ In both cases, applying the UDF to the element instead keeps it on the fast path
 
 One thing genuinely cannot work: a Python ``if`` on a UDF result
 (``lambda x: 1 if plus_one(x) else 0``). ``if`` needs a real boolean while the
-lambda is being traced, and a Column cannot provide one -- the same limitation
+lambda is being traced, and a Column cannot provide one - the same limitation
 plain PySpark has for ``if col > 1``. Use ``F.when(...)`` instead.
 
 ``functions`` is a transparent proxy: every attribute is forwarded to
@@ -112,8 +112,10 @@ _RETURNS_INPUT_ELEMENTS = frozenset(["filter"])
 
 # A comparator's second parameter is another element, not the element's position:
 # ``array_sort(col, lambda a, b)`` is indistinguishable from
-# ``transform(col, lambda x, i)`` from the call site. Reading ``b`` as an index
-# would silently mis-sort, and a comparator has no element-wise reading anyway.
+# ``transform(col, lambda x, i)`` from the call site, and reading ``b`` as an
+# index would silently mis-sort. ``sort_array`` is listed too although its second
+# parameter is a bool rather than a lambda: it can never reach this code, and
+# naming it here documents that it is not an oversight.
 _COMPARATORS = frozenset(["array_sort", "sort_array"])
 
 # Folds: the lambda takes (accumulator, element). Only the element can be
@@ -252,31 +254,15 @@ class _ElementwiseUDF:
         ``plan`` gives, per argument, which array it comes from, or a negative
         index into ``consts`` for an argument that does not vary across the loop.
         ``length_of`` supplies the loop length when *every* argument is constant
-        -- ``lambda x: my_udf(F.lit(1))`` still has to yield one result per
-        element -- and is then iterated only to count.
+        - ``lambda x: my_udf(F.lit(1))`` still has to yield one result per
+        element - and is then iterated only to count.
         """
         if not arrays and length_of is not None:
             arrays = [length_of]
             plan = [p for p in plan]  # unchanged: nothing refers to slot 0
-        n = len(arrays)
-        plan = list(plan)
-        # Bind the plain function: closing over ``self`` would pull the
-        # JVM-bound UDF into the closure, which cloudpickle cannot serialize.
-        func = self.func
-
-        def mapper(*args: Any) -> Any:
-            got, const_vals = args[:n], args[n:]
-            if any(a is None for a in got):
-                return None
-            out = []
-            # ``plan`` may refer to no array at all, in which case the arrays
-            # above serve only to fix how many results to produce.
-            for elems in itertools.zip_longest(*got):
-                # A negative plan entry indexes the constants from the end:
-                # -1 -> const_vals[-1] is wrong, so map it explicitly.
-                out.append(func(*[elems[p] if p >= 0 else const_vals[-p - 1] for p in plan]))
-            return out
-
+        # ``self.func`` rather than ``self``: closing over the wrapper would pull
+        # the JVM-bound UDF into the closure, which cloudpickle cannot serialize.
+        mapper = _element_mapper(self.func, len(arrays), list(plan))
         mapper.__name__ = f"{self.func.__name__}_over_array"
         base = self.scalar._unwrapped
         array_udf = type(base)(
@@ -288,6 +274,77 @@ class _ElementwiseUDF:
         return array_udf(*arrays, *consts)
 
 
+def _element_mapper(
+    func: Callable[..., Any], n_arrays: int, plan: Sequence[int]
+) -> Callable[..., Any]:
+    """The array-at-a-time function an element-wise UDF is rebuilt around.
+
+    Takes ``n_arrays`` arrays followed by the constant columns, and returns one
+    result per element. ``plan`` says where each of ``func``'s arguments comes
+    from: a non-negative entry indexes the arrays, a negative one the constants.
+
+    Module level, not a closure, so it can be exercised directly; in a real query
+    it only ever runs inside a Spark Python worker.
+    """
+    plan = list(plan)
+
+    def mapper(*args: Any) -> Any:
+        got, const_vals = args[:n_arrays], args[n_arrays:]
+        if any(a is None for a in got):
+            return None
+        out = []
+        # ``plan`` may refer to no array at all, in which case the arrays serve
+        # only to fix how many results to produce.
+        for elems in itertools.zip_longest(*got):
+            # A negative entry counts from -1, so it cannot index const_vals
+            # directly: -1 -> const_vals[0].
+            out.append(func(*[elems[p] if p >= 0 else const_vals[-p - 1] for p in plan]))
+        return out
+
+    return mapper
+
+
+def _rank_mapper(compare: Callable[[Any, Any], int]) -> Callable[[Any], Any]:
+    """Sort a whole array in Python with ``compare``, returning each rank.
+
+    Used when a comparator is genuinely pairwise, so no per-element key exists.
+    Module level for the same reason as :func:`_element_mapper`.
+    """
+
+    def rank(values: Any) -> Any:
+        if values is None:
+            return None
+        order = sorted(
+            range(len(values)),
+            key=functools.cmp_to_key(lambda i, j: compare(values[i], values[j])),
+        )
+        ranks = [0] * len(values)
+        for position, i in enumerate(order):
+            ranks[i] = position
+        return ranks
+
+    return rank
+
+
+def _fold_mapper(
+    merge: Callable[[Any, Any], Any], finish: Optional[Callable[[Any], Any]]
+) -> Callable[..., Any]:
+    """Fold a whole array in Python, for a UDF applied to the accumulator.
+
+    Module level for the same reason as :func:`_element_mapper`.
+    """
+
+    def fold(values: Any, initial: Any) -> Any:
+        if values is None:
+            return None
+        acc = initial
+        for x in values:
+            acc = merge(acc, x)
+        return finish(acc) if finish is not None else acc
+
+    return fold
+
+
 def udf(
     f: Optional[Union[Callable[..., Any], "DataTypeOrString"]] = None,
     returnType: "DataTypeOrString" = "string",
@@ -297,7 +354,7 @@ def udf(
     """Create a Python UDF that also works inside a higher-order function.
 
     A drop-in replacement for :func:`pyspark.sql.functions.udf`, accepting every
-    form it does -- ``returnType`` is the *element* return type::
+    form it does - ``returnType`` is the *element* return type::
 
         from elementwise_udf import udf, functions as F
 
@@ -516,15 +573,15 @@ def _rewrite_comparator(
     """Rewrite ``array_sort(col, lambda a, b: ...)`` using a Python UDF.
 
     A comparator sees two elements at once, so its Python part cannot be run
-    pairwise -- there are O(n log n) comparisons and no array to precompute them
+    pairwise - there are O(n log n) comparisons and no array to precompute them
     over. What can be precomputed is the UDF applied to *each element*, giving a
     sort key. Both comparator parameters are therefore fed the same array, and
     each element travels with its keys, so the JVM does the comparing::
 
         array_sort(zip(col, key(col)), lambda a, b: cmp(a.u0, b.u0))
 
-    A comparator that passes both of its parameters to one UDF call -- a genuinely
-    pairwise decision -- has no such key and is refused.
+    A comparator that passes both of its parameters to one UDF call - a genuinely
+    pairwise decision - has no such key and is refused.
     """
     col_pos = [i for i, a in enumerate(args) if i != fun_pos and isinstance(a, (str, Column))]
     col = _F.col(args[col_pos[0]]) if isinstance(args[col_pos[0]], str) else args[col_pos[0]]
@@ -576,7 +633,7 @@ def _rewrite_pairwise(name: str, col: Column, f: Callable, udf: "_ElementwiseUDF
     element's rank. Native ``array_sort`` then orders by that rank.
 
     The comparator therefore runs O(n log n) times per row inside a single Python
-    call, rather than once per element -- the cost the warning below reports.
+    call, rather than once per element - the cost the warning below reports.
     """
     warnings.warn(
         f"{name}: the comparator passes both elements to {udf.func.__name__!r}, "
@@ -588,21 +645,8 @@ def _rewrite_pairwise(name: str, col: Column, f: Callable, udf: "_ElementwiseUDF
         RuntimeWarning,
         stacklevel=4,
     )
-    compare = udf.func
-
-    def rank(values: Any) -> Any:
-        if values is None:
-            return None
-        order = sorted(
-            range(len(values)),
-            key=functools.cmp_to_key(lambda i, j: compare(values[i], values[j])),
-        )
-        ranks = [0] * len(values)
-        for position, i in enumerate(order):
-            ranks[i] = position
-        return ranks
-
-    rank.__name__ = f"{compare.__name__}_ranks"
+    rank = _rank_mapper(udf.func)
+    rank.__name__ = f"{udf.func.__name__}_ranks"
     base = udf.scalar._unwrapped
     rank_udf = type(base)(
         rank,
@@ -700,7 +744,7 @@ def _rewrite_fold_in_python(
             "merge step also uses Spark expressions (F.when, column operators, "
             "...). The accumulator only exists between fold steps, so it cannot "
             "be precomputed, and writing the fold out longhand duplicates the "
-            "accumulator once per step -- the expression tree doubles each time, "
+            "accumulator once per step - the expression tree doubles each time, "
             "which Spark Connect cannot even serialize. Write the merge step in "
             "plain Python instead, so the whole fold can run in one call:\n"
             "    lambda acc, x: my_udf(acc) + x            # supported\n"
@@ -718,14 +762,7 @@ def _rewrite_fold_in_python(
         stacklevel=4,
     )
 
-    def merge_in_python(values: Any, initial: Any) -> Any:
-        if values is None:
-            return None
-        acc = initial
-        for x in values:
-            acc = plain(acc, x)
-        return plain_finish(acc) if plain_finish is not None else acc
-
+    merge_in_python = _fold_mapper(plain, plain_finish)
     merge_in_python.__name__ = f"{name}_in_python"
     base = udf.scalar._unwrapped
     fold_udf = type(base)(
@@ -742,7 +779,7 @@ def _runs_in_plain_python(merge: Callable, finish: Optional[Callable]) -> bool:
     """Whether the merge step can be evaluated on plain Python numbers.
 
     Probed by actually running it on sample values. A lambda that mixes the UDF
-    with Spark expressions -- ``F.when(plus_one(acc) > 2, ...)`` -- returns a
+    with Spark expressions - ``F.when(plus_one(acc) > 2, ...)`` - returns a
     Column or raises here, which means the cheap replay above is not valid for it.
     """
     for candidate in (merge, finish):
@@ -787,7 +824,7 @@ def _rewrite_map_zip(name: str, args: Sequence[Any], fun_pos: int, f: Callable) 
     """Rewrite ``map_zip_with(m1, m2, lambda k, v1, v2: ...)`` using a Python UDF.
 
     ``map_zip_with`` visits the union of both maps' keys, so that union is built
-    explicitly and each map is looked up per key -- giving three aligned arrays
+    explicitly and each map is looked up per key - giving three aligned arrays
     that the array machinery then handles. Keys missing from one map look up as
     null, matching ``map_zip_with``'s own behaviour.
     """
@@ -818,7 +855,7 @@ def _rewrite_map(name: str, args: Sequence[Any], fun_pos: int, f: Callable) -> O
     """Rewrite a map-valued higher-order function using a Python UDF.
 
     Maps are turned into their key and value arrays, the UDF is applied to those,
-    and a map is rebuilt -- so the array machinery covers ``transform_keys``,
+    and a map is rebuilt - so the array machinery covers ``transform_keys``,
     ``transform_values`` and ``map_filter`` without special cases beyond which
     part of the result to keep.
     """

@@ -1,6 +1,6 @@
 """The ``functions`` proxy must be a faithful stand-in for the real module.
 
-Native lambdas -- those using no element-wise UDF -- must reach PySpark
+Native lambdas - those using no element-wise UDF - must reach PySpark
 completely unchanged, and PySpark itself must never be modified.
 """
 

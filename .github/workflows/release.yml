@@ -12,7 +12,7 @@
 # dry-run path uses OIDC instead.
 #
 # Before anything is published the wheel is built, installed, imported, and
-# metadata-checked, and the tag is required to match the packaged version -- so a
+# metadata-checked, and the tag is required to match the packaged version - so a
 # mistyped tag fails the run rather than shipping a mislabelled release.
 
 name: release

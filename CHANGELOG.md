@@ -34,7 +34,8 @@ Distribution name on PyPI: `elementwise-udf`. Import name: `elementwise_udf`.
   UDFs in one lambda, and UDF arguments that are themselves expressions over the
   element.
 - Verified on classic PySpark and Spark Connect (including Databricks Connect
-  serverless), across Spark 4.0, 4.1 and 4.2.
+  serverless), across Spark 4.0, 4.1 and 4.2: 264 tests per session mode, 99%
+  statement coverage.
 
 <!--
 Release runbook:
