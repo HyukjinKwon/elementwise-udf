@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "elementwise-udf"
+version = "0.1.0"
+description = "Use Python UDFs inside Spark's native higher-order functions"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+keywords = ["spark", "pyspark", "udf", "higher-order-functions", "databricks"]
+classifiers = [
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = ["pyspark>=3.4"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "black>=24", "pyspark[connect]>=3.4"]
+
+[project.urls]
+Homepage = "https://github.com/HyukjinKwon/elementwise-udf"
+Issues = "https://github.com/HyukjinKwon/elementwise-udf/issues"
+
+[tool.setuptools.packages.find]
+include = ["elementwise_udf*"]
+
+[tool.black]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
