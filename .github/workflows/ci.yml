@@ -117,7 +117,7 @@ jobs:
 
           before = {name: getattr(F, name) for name in dir(F) if not name.startswith("__")}
           import elementwise_udf  # noqa: F401
-          from elementwise_udf import functions, udf  # noqa: F401
+          import elementwise_udf.functions  # noqa: F401
 
           changed = [
               name for name, value in before.items() if getattr(F, name, None) is not value
@@ -183,8 +183,8 @@ jobs:
           set -euxo pipefail
           pip install "pyspark[connect]>=4.0"
           python -c "
-          from elementwise_udf import udf, functions
-          print('import OK', udf.__name__, type(functions).__name__)
+          import elementwise_udf.functions as esf
+          print('import OK', esf.udf.__name__, esf.transform.__name__)
           "
       - name: twine check (PyPI metadata + long-description render)
         run: |

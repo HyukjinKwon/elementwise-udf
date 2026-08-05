@@ -67,13 +67,31 @@ jobs:
           python -m build --sdist --wheel --outdir dist
           ls -la dist
 
-      - name: Install + import the wheel
+      - name: Assert the wheel declares no hard dependency
+        # pyspark must stay behind an extra: the package is installed into an
+        # existing Spark environment that already provides its own. Mirrors
+        # ci.yml's build-wheel job, so the publish path carries the same guard.
         run: |
           set -euxo pipefail
           python -m pip install dist/elementwise_udf-*.whl
+          python - <<'PY'
+          import importlib.metadata as m
+
+          reqs = m.requires("elementwise-udf") or []
+          hard = [r for r in reqs if "extra ==" not in r]
+          assert not hard, f"wheel declares hard dependencies: {hard}"
+          print("OK: every requirement is behind an extra")
+          PY
+
+      - name: Install pyspark, then import the wheel
+        # The import needs pyspark, exactly as a real environment provides it;
+        # the step above already proved pip does not pull one in by itself.
+        run: |
+          set -euxo pipefail
+          python -m pip install "pyspark[connect]>=4.0"
           python -c "
-          from elementwise_udf import udf, functions
-          print('import OK', udf.__name__, type(functions).__name__)
+          import elementwise_udf.functions as esf
+          print('import OK', esf.udf.__name__, esf.transform.__name__)
           "
 
       - name: twine check (PyPI metadata + long-description render)
