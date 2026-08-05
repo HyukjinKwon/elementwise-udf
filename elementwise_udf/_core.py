@@ -178,6 +178,10 @@ _active: Optional[_Recorder] = None
 # sequential fold), where a UDF call should compute rather than build a Column.
 _direct = False
 
+# Set while a fold's ``finish`` lambda is being built, where a UDF must return
+# null for a null accumulator rather than run on it.
+_null_safe = False
+
 
 class _ElementwiseUDF:
     """A Python UDF usable both normally and inside a higher-order function."""
@@ -192,6 +196,7 @@ class _ElementwiseUDF:
         self._returnType = returnType
         self._useArrow = useArrow
         self._scalar: Optional[Any] = None
+        self._null_safe_scalar: Optional[Any] = None
         functools.update_wrapper(self, func)
 
     @property
@@ -215,6 +220,21 @@ class _ElementwiseUDF:
     def deterministic(self) -> bool:
         return self.scalar.deterministic
 
+    @property
+    def null_safe(self) -> Any:
+        """The UDF rebuilt to return null when any argument is null."""
+        if self._null_safe_scalar is None:
+            func = self.func
+
+            @functools.wraps(func)
+            def skip_nulls(*values: Any) -> Any:
+                if any(v is None for v in values):
+                    return None
+                return func(*values)
+
+            self._null_safe_scalar = _F.udf(skip_nulls, self._returnType, useArrow=self._useArrow)
+        return self._null_safe_scalar
+
     def asNondeterministic(self) -> "_ElementwiseUDF":
         """Mark the UDF nondeterministic, as ``pyspark``'s own UDFs allow."""
         other = _ElementwiseUDF(self.func, self._returnType, self._useArrow)
@@ -226,6 +246,11 @@ class _ElementwiseUDF:
         return self.scalar.returnType
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if _null_safe and _active is None and not kwargs:
+            # Inside a fold's ``finish`` lambda: a null accumulator means the
+            # fold saw a null array, which native Spark never folds, so the UDF
+            # must not run on it.
+            return self.null_safe(*args)
         if _direct:
             # Sequential-fold replay: operate on plain Python values directly.
             return self.func(*args, **kwargs)
@@ -727,7 +752,33 @@ def _rewrite_fold_with_finish(
         folded = rewritten if rewritten is not None else original(*without_finish)
     else:
         folded = original(*[a for i, a in enumerate(args) if i != finish_pos])
-    return args[finish_pos](folded)
+    # A fold over a null array is null, and native Spark does not evaluate the
+    # ``finish`` lambda for it. Applying the UDF outside the fold would call it
+    # on that null, and a null-unaware UDF then raises where plain PySpark
+    # returns null. Wrapping in ``when`` does not help: Spark evaluates both
+    # branches, so the UDF still sees the null. The guard therefore has to live
+    # inside the UDF, which is what ``_null_safe`` rebuilds it to do.
+    return _guard_finish(args[finish_pos])(folded)
+
+
+def _guard_finish(finish: Callable[[Column], Column]) -> Callable[[Column], Column]:
+    """Wrap a ``finish`` lambda so its element-wise UDFs skip a null input.
+
+    ``when(cond, udf(x))`` does not protect ``udf``: Spark evaluates both
+    branches. Instead every element-wise UDF the lambda calls is rebuilt to
+    return null for a null argument, matching native Spark, which does not
+    evaluate ``finish`` at all when the fold produced null.
+    """
+
+    def guarded(acc: Column) -> Column:
+        global _null_safe
+        previous, _null_safe = _null_safe, True
+        try:
+            return finish(acc)
+        finally:
+            _null_safe = previous
+
+    return guarded
 
 
 def _rewrite_fold_in_python(

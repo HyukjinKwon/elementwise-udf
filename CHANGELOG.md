@@ -35,6 +35,26 @@ Release runbook:
 ### Added
 - _Nothing yet._
 
+## [0.2.0] - 2026-08-05
+
+### Fixed
+- A UDF in a fold's `finish` lambda was applied to the fold's result even when
+  that result was null, so a null-unaware UDF raised where plain PySpark returns
+  null. Native Spark does not evaluate `finish` for a null array, and the rewrite
+  now matches: `aggregate(v, 0, merge, lambda a: my_udf(a))` over a null array
+  returns null instead of failing. Wrapping the call in `when` does not fix this,
+  because Spark evaluates both branches, so the guard is built into the UDF.
+
+  Found by running the package from PyPI on a real Databricks Shared cluster
+  (`USER_ISOLATION`) across DBR 17.3, 18.3 and 19 - 23 of 24 checks passed, and
+  this was the one that did not. Local tests had covered the `finish` lambda and
+  null arrays, but never both at once.
+
+### Changed
+- `pyspark` is no longer a hard dependency, so `pip install elementwise-udf`
+  leaves the environment's own pyspark alone. Use the `spark` or `connect` extra
+  to install one.
+
 ## [0.1.0] - 2026-08-05
 
 ### Added

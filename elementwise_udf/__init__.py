@@ -20,4 +20,4 @@ from elementwise_udf._core import udf
 
 __all__ = ["udf"]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

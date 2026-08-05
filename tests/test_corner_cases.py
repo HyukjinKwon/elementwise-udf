@@ -285,3 +285,29 @@ def test_udf_in_both_a_folds_merge_and_finish_lambdas(spark):
     )
     # merge: 0 + 2 + 3 = 5; finish: plus_one(5) = 6
     assert got == [6]
+
+
+def test_fold_finish_udf_is_not_called_for_a_null_array(spark):
+    # A fold over a null array is null, and native Spark does not evaluate the
+    # finish lambda for it. Found on a real DBR cluster: the UDF was applied to
+    # that null and a null-unaware body raised, where plain PySpark returns null.
+    # Wrapping in `when` does not help - Spark evaluates both branches - so the
+    # guard lives inside the rebuilt UDF.
+    df = spark.createDataFrame([([1, 2, 3],), ([],), (None,)], "v array<int>")
+    got = col(
+        df,
+        esf.aggregate("v", esf.lit(0).cast("long"), lambda a, x: a + x, lambda a: plus_one(a)),
+    )
+    assert got == [7, 1, None]
+
+
+def test_fold_finish_matches_native_spark_for_nulls(spark):
+    import pyspark.sql.functions as sf
+
+    df = spark.createDataFrame([([1, 2, 3],), ([],), (None,)], "v array<int>")
+    rewritten = col(
+        df,
+        esf.aggregate("v", esf.lit(0).cast("long"), lambda a, x: a + x, lambda a: plus_one(a)),
+    )
+    native = col(df, sf.aggregate("v", sf.lit(0).cast("long"), lambda a, x: a + x, lambda a: a + 1))
+    assert rewritten == native
