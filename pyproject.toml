@@ -17,9 +17,15 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = ["pyspark>=4.0"]
+# PySpark is deliberately NOT a hard dependency: this is used inside an existing
+# Spark environment (a cluster, Databricks Connect, a notebook image) that
+# already provides its own pyspark, and pinning one here would fight it. Install
+# the `spark` extra to pull one in for local use.
+dependencies = []
 
 [project.optional-dependencies]
+spark = ["pyspark>=4.0"]
+connect = ["pyspark[connect]>=4.0"]
 dev = [
     "pytest>=7",
     "pytest-cov>=4",

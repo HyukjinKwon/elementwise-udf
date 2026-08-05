@@ -9,11 +9,14 @@ or against Databricks serverless by replacing the session setup with::
     from databricks.connect import DatabricksSession
     spark = DatabricksSession.builder.serverless().getOrCreate()
 
-Note ``functions`` is imported from this package rather than from
-``pyspark.sql``. It forwards every attribute to ``pyspark.sql.functions``
-untouched, and is what rewrites a higher-order call so the UDF can sit inside
-its lambda. Importing ``pyspark.sql.functions`` directly leaves the call
-unrewritten, and Spark rejects it.
+Note ``functions`` is imported from this package rather than from ``pyspark.sql``.
+It is a transparent proxy: every attribute is forwarded to
+``pyspark.sql.functions`` untouched, so it is a drop-in for
+``import pyspark.sql.functions as sf``. The one difference is that it rewrites a
+higher-order call whose lambda uses an element-wise UDF, lifting the UDF out of
+the lambda - which is the only place Spark allows it. Importing
+``pyspark.sql.functions`` directly leaves the call unrewritten and Spark rejects
+it. See the README section "Why functions is imported from here".
 """
 
 from pyspark.sql import SparkSession

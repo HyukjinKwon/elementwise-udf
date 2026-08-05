@@ -18,13 +18,13 @@ lambda fails at analysis
 ([SPARK-27052](https://issues.apache.org/jira/browse/SPARK-27052)):
 
 ```python
-from pyspark.sql import functions as F
+import pyspark.sql.functions as sf
 
-@F.udf("long")
+@sf.udf("long")
 def plus_one(x):
     return x + 1
 
-df.select(F.transform("values", lambda x: plus_one(x)).alias("result"))
+df.select(sf.transform("values", lambda x: plus_one(x)).alias("result"))
 # AnalysisException: [UNSUPPORTED_FEATURE.LAMBDA_FUNCTION_WITH_PYTHON_UDF]
 ```
 
@@ -58,6 +58,64 @@ The name: "element-wise" describes how the UDF runs, one call per array *element
 which is exactly what a higher-order function's lambda expresses. Nothing about
 the package is specific to any one function; every higher-order function Spark
 has is covered.
+
+## Why `functions` is imported from here
+
+`elementwise_udf.functions` is a **transparent proxy for
+`pyspark.sql.functions`**: every attribute is looked up on the real module and
+delegated to it, so `sf.col`, `sf.lit`, `sf.sum`, `sf.when` and the other 500-odd
+names behave exactly as PySpark's do and build identical expressions. `dir()`
+matches name for name, and nothing in PySpark is patched, wrapped in place or
+mutated - a CI job asserts that on every commit. It is a drop-in for
+`import pyspark.sql.functions as sf`.
+
+(Callables are delegated through a thin wrapper rather than handed back as the
+same object, so `sf.col is not pyspark.sql.functions.col`. The wrapper checks one
+thing - whether this call is a higher-order function whose lambda uses an
+element-wise UDF - and otherwise forwards the arguments untouched. The original
+is reachable as `sf.col.__wrapped__` if identity ever matters.)
+
+The single difference is that a higher-order call is *rewritten* when its lambda
+uses an element-wise UDF, and that rewrite has to happen in Python at the call
+site, before any plan exists. Compare what each module builds for the same
+expression:
+
+```python
+import pyspark.sql.functions as plain
+from elementwise_udf import functions as sf
+
+plain.transform("values", lambda x: plus_one(x))
+# transform(values, x_1 -> plus_one(<lambda var x_1>))
+#                          ^^^^^^^^ Python UDF inside the lambda -> Spark refuses
+
+sf.transform("values", lambda x: plus_one(x))
+# transform(arrays_zip(values AS c0, plus_one_over_array(values) AS u0), s -> s.u0)
+#                                    ^^^^^^^^^^^^^^^^^^^ UDF outside the lambda -> legal
+```
+
+Spark's analyzer rejects *any* Python UDF inside a `lambdafunction` node - that is
+SPARK-27052. `plain.transform` takes the lambda verbatim and builds exactly that,
+so nothing is left to fix by the time Spark sees it. Importing the higher-order
+functions from `pyspark.sql.functions` directly therefore leaves them unrewritten
+and the original error stands.
+
+The alternative would be to monkey-patch `pyspark.sql.functions` on import. This
+package deliberately does not: patching a module the whole process shares is
+order-dependent, surprising to anyone else importing it, and impossible to scope
+to your own code.
+
+Only the higher-order functions need the proxy, so mixing the two imports is
+fine:
+
+```python
+import pyspark.sql.functions as plain
+from elementwise_udf import functions as sf
+
+df.select(
+    plain.upper("name"),                             # plain PySpark is fine
+    sf.transform("values", lambda x: plus_one(x)),   # needs the proxy
+)
+```
 
 ## How it works
 
@@ -203,6 +261,16 @@ build a pipeline on.
 PySpark 4.0+, on classic PySpark or Spark Connect / Databricks Connect
 (including serverless). CI covers Spark 4.0, 4.1 and 4.2 in both session modes.
 Plain and Arrow-optimized Python UDFs are both supported.
+
+PySpark itself is **not** a hard dependency. This is meant to run inside an
+existing Spark environment - a cluster, Databricks Connect, a notebook image -
+which already provides its own pyspark, and pinning one here would fight it:
+
+```bash
+pip install elementwise-udf              # uses whatever pyspark is present
+pip install 'elementwise-udf[spark]'     # also install pyspark
+pip install 'elementwise-udf[connect]'   # also install pyspark with Connect
+```
 
 ## Development
 

@@ -5,6 +5,7 @@ completely unchanged, and PySpark itself must never be modified.
 """
 
 import pyspark.sql.functions as real
+import pytest
 
 from elementwise_udf import udf, functions as F
 
@@ -80,3 +81,49 @@ def test_null_and_empty_arrays_are_preserved(values):
     # A null array stays null and an empty one stays empty; in both cases the
     # UDF is never called (the UDF itself asserts on null input).
     assert col(values, F.transform("v", lambda x: plus_one(x))) == [[2, 3, 4], [], None]
+
+
+# The README's "Why functions is imported from here" section makes specific
+# claims about the proxy. These pin them so the docs cannot drift.
+
+
+def test_dir_matches_pyspark_name_for_name():
+    assert dir(F) == dir(real)
+
+
+def test_callables_are_delegated_through_a_wrapper():
+    # Not the same object, but wrapping the original: the README says so
+    # explicitly, because `sf.col is pyspark.sql.functions.col` is False.
+    assert F.col is not real.col
+    assert F.col.__wrapped__ is real.col
+
+
+def test_delegated_functions_build_identical_expressions():
+    assert repr(F.col("v")) == repr(real.col("v"))
+    assert repr(F.lit(1)) == repr(real.lit(1))
+    assert repr(F.upper(F.col("v"))) == repr(real.upper(real.col("v")))
+
+
+def test_non_higher_order_results_match_pyspark(values):
+    for build in (F.size, F.reverse, F.array_max):
+        assert col(values, build("v")) == col(values, getattr(real, build.__name__)("v"))
+
+
+def test_mixing_plain_pyspark_and_the_proxy_in_one_select(spark):
+    # Only the higher-order call needs the proxy; everything else may come from
+    # pyspark directly, as the README shows.
+    df = spark.createDataFrame([(["ab"], [1, 2])], "name array<string>, v array<int>")
+    out = df.select(
+        real.upper(real.element_at("name", 1)).alias("u"),
+        F.transform("v", lambda x: plus_one(x)).alias("m"),
+    )
+    assert [tuple(r) for r in out.collect()] == [("AB", [2, 3])]
+
+
+def test_plain_pyspark_higher_order_function_is_left_broken(spark):
+    # The flip side of the same claim: imported from pyspark directly, a Python
+    # UDF in the lambda still fails, which is why the proxy exists.
+    df = spark.createDataFrame([([1, 2],)], "v array<int>")
+    with pytest.raises(Exception) as excinfo:
+        df.select(real.transform("v", lambda x: plus_one(x))).collect()
+    assert "LAMBDA_FUNCTION_WITH_PYTHON_UDF" in str(excinfo.value)
