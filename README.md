@@ -58,6 +58,21 @@ which is exactly what a higher-order function's lambda expresses. Nothing about
 the package is specific to any one function; every higher-order function Spark
 has is covered.
 
+## Install
+
+```bash
+pip install elementwise-udf
+```
+
+PySpark is deliberately not a hard dependency, so this uses whatever pyspark the
+environment already provides - a cluster, Databricks Connect, a notebook image.
+To pull one in as well:
+
+```bash
+pip install 'elementwise-udf[spark]'     # with pyspark
+pip install 'elementwise-udf[connect]'   # with pyspark, including Connect
+```
+
 ## Import
 
 ```python
@@ -213,15 +228,9 @@ PySpark 4.0+, on classic PySpark or Spark Connect / Databricks Connect
 (including serverless). CI covers Spark 4.0, 4.1 and 4.2 in both session modes.
 Plain and Arrow-optimized Python UDFs are both supported.
 
-PySpark itself is **not** a hard dependency. This is meant to run inside an
-existing Spark environment - a cluster, Databricks Connect, a notebook image -
-which already provides its own pyspark, and pinning one here would fight it:
-
-```bash
-pip install elementwise-udf              # uses whatever pyspark is present
-pip install 'elementwise-udf[spark]'     # also install pyspark
-pip install 'elementwise-udf[connect]'   # also install pyspark with Connect
-```
+PySpark itself is not a hard dependency, since this runs inside an existing Spark
+environment that already provides its own and pinning one here would fight it.
+See [Install](#install).
 
 ## Development
 
