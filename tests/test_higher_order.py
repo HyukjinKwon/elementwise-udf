@@ -4,36 +4,36 @@ import warnings
 
 import pytest
 
-from elementwise_udf import elementwise_udf, functions as F
+from elementwise_udf import udf, functions as F
 
 
-@elementwise_udf("long")
+@udf("long")
 def plus_one(x):
     assert x is not None, "a null element must never reach the UDF"
     return x + 1
 
 
-@elementwise_udf("long")
+@udf("long")
 def times_ten(x):
     return x * 10
 
 
-@elementwise_udf("long")
+@udf("long")
 def add(a, b):
     return (a or 0) + (b or 0)
 
 
-@elementwise_udf("boolean")
+@udf("boolean")
 def is_odd(x):
     return x % 2 == 1
 
 
-@elementwise_udf("string")
+@udf("string")
 def upper(s):
     return str(s).upper()
 
 
-@elementwise_udf("int")
+@udf("int")
 def compare(a, b):
     return -1 if a < b else (1 if a > b else 0)
 

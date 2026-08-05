@@ -1,22 +1,33 @@
 # elementwise-udf
 
-Use Python UDFs inside Spark's native higher-order functions.
+**A PySpark Python UDF that works inside Spark's native higher-order functions**
+-- `transform`, `filter`, `exists`, `aggregate`, `array_sort` and the rest.
 
-Spark rejects a Python UDF in a higher-order function's lambda
+Spark normally refuses this. A Python UDF called inside a higher-order function's
+lambda fails at analysis
 ([SPARK-27052](https://issues.apache.org/jira/browse/SPARK-27052)):
 
 ```python
+from pyspark.sql import functions as F
+
+@F.udf("long")
+def plus_one(x):
+    return x + 1
+
 df.select(F.transform("values", lambda x: plus_one(x)).alias("result"))
-# [UNSUPPORTED_FEATURE.LAMBDA_FUNCTION_WITH_PYTHON_UDF]
+# AnalysisException: [UNSUPPORTED_FEATURE.LAMBDA_FUNCTION_WITH_PYTHON_UDF]
 ```
 
-Declare the UDF with `elementwise_udf`, import `functions` from this package
-instead of from `pyspark.sql`, and the call works as written:
+That is the only problem this package solves. Declare the UDF with its `udf`
+instead of PySpark's, import `functions` from here instead of from `pyspark.sql`,
+and the *same* call works -- same `select`, same `F.transform`, same lambda:
 
 ```python
-from elementwise_udf import elementwise_udf, functions as F
+# `udf` is aliased to `eudf` here so it is never confused with
+# pyspark.sql.functions.udf; either name works.
+from elementwise_udf import udf as eudf, functions as F
 
-@elementwise_udf("long")
+@eudf("long")
 def plus_one(x):
     return x + 1
 
@@ -28,8 +39,14 @@ df.select(F.transform("values", lambda x: plus_one(x)).alias("result")).show()
 # +---------+
 ```
 
-The UDF still works as an ordinary UDF everywhere else — `plus_one(F.lit(1))`
-behaves exactly like a plain `@udf("long")`.
+The UDF still works as an ordinary UDF everywhere else -- `plus_one(F.lit(1))`,
+`plus_one("id")`, `spark.udf.register(...)` -- so it can replace
+`pyspark.sql.functions.udf` outright rather than sitting beside it.
+
+The name: "element-wise" describes how the UDF runs, one call per array *element*,
+which is exactly what a higher-order function's lambda expresses. Nothing about
+the package is specific to any one function; every higher-order function Spark
+has is covered.
 
 ## How it works
 
@@ -47,7 +64,7 @@ Its results ride alongside the original elements, and the lambda is re-run with
 each UDF call replaced by a reference to the precomputed field.
 
 The native higher-order function still does the iterating; only the UDF moved.
-There is no `explode` and no shuffle — one row in, one row out. The generated
+There is no `explode` and no shuffle -- one row in, one row out. The generated
 plan is identical to the hand-written version:
 
 ```
@@ -84,7 +101,36 @@ appear in one `select` alongside ordinary columns.
 
 `functions` is a transparent proxy: every attribute is forwarded to
 `pyspark.sql.functions` untouched, nothing in PySpark is patched, and lambdas
-that use no `elementwise_udf` are passed straight through.
+that use no element-wise UDF are passed straight through.
+
+## A drop-in for `pyspark.sql.functions.udf`
+
+`udf` accepts every form PySpark's own does, so `from elementwise_udf import udf`
+can replace `from pyspark.sql.functions import udf` wholesale:
+
+```python
+@eudf("long")                             # decorator with a return type
+def plus_one(x):
+    return x + 1
+
+@eudf                                     # bare decorator, returnType="string"
+def stringify(x):
+    return str(x)
+
+plus_one = eudf(lambda x: x + 1, "long")               # called directly
+arrow_udf = eudf(lambda x: x + 1, "long", useArrow=True)
+```
+
+Outside a higher-order function these behave exactly like a plain PySpark UDF --
+`plus_one("id")`, `plus_one(F.lit(1))`, `asNondeterministic()`, `.returnType`.
+For SQL registration, hand Spark the real UDF underneath via `.scalar`:
+
+```python
+spark.udf.register("plus_one", plus_one.scalar)
+```
+
+`pandas_udf` is not covered: it receives a Series rather than single values, so
+the element-wise rewrite does not apply to it.
 
 ## Slow paths (they work, but warn)
 
@@ -107,7 +153,7 @@ Applying the UDF to the element instead keeps it on the fast path.
 
 ## Not supported
 
-A Python `if` on a UDF result:
+**A Python `if` on a UDF result.**
 
 ```python
 F.transform("values", lambda x: 1 if plus_one(x) else 0)   # CANNOT_CONVERT_COLUMN_INTO_BOOL
@@ -116,6 +162,30 @@ F.transform("values", lambda x: 1 if plus_one(x) else 0)   # CANNOT_CONVERT_COLU
 `if` needs a real boolean while the lambda is being traced, and a Column cannot
 provide one. This is the same limitation plain PySpark has for `if col > 1`. Use
 `F.when(...)` instead.
+
+**A UDF on `aggregate`'s accumulator when the merge step *also* uses Spark
+expressions.**
+
+```python
+# supported: the whole fold replays in Python
+F.aggregate("v", F.lit(0).cast("long"), lambda acc, x: plus_one(acc) + x)
+
+# not supported: F.when cannot be replayed in Python, and the accumulator
+# cannot be precomputed -> TypeError explaining both options
+F.aggregate("v", F.lit(0).cast("long"),
+            lambda acc, x: F.when(plus_one(acc) > 2, 1).otherwise(0) + x)
+```
+
+Writing such a fold out longhand -- one explicit step per element -- looks
+tempting, and it does produce the right answer, but each step references the
+previous accumulator twice (once per `when` branch), so the expression tree
+*doubles* per step. Spark has no let-binding to share those subtrees. Measured on
+a single 3-element array with a bound of 8 steps: **13.3s** versus **0.13s** for
+the Python replay, roughly 100x for an identical result. Spark Connect is worse
+still -- it serializes the tree to protobuf with no node sharing, and even 2
+steps never finished serializing. That approach was implemented, measured, and
+removed; the clear `TypeError` is deliberate. Keep the merge step in plain
+Python, or apply the UDF to the element.
 
 ## Performance
 
@@ -131,18 +201,25 @@ expressible in native Spark functions, that remains far faster. On the fast path
 the UDF runs once per row over a whole array, so work parallelizes across rows
 but not within a single row.
 
+The two warning paths above are far slower again. `aggregate` over the
+accumulator replays the fold in Python once per row (0.13s for the case above,
+versus 0.06s to build the fast path); a pairwise comparator calls the UDF
+O(n log n) times per row. Both are correctness escape hatches, not something to
+build a pipeline on.
+
 ## Requirements
 
-PySpark 3.4+, on classic PySpark or Spark Connect / Databricks Connect
-(including serverless). Plain and Arrow-optimized Python UDFs are both supported;
-`pandas_udf` is not, since it receives Series rather than single values.
+PySpark 4.0+, on classic PySpark or Spark Connect / Databricks Connect
+(including serverless). CI covers Spark 4.0, 4.1 and 4.2 in both session modes.
+Plain and Arrow-optimized Python UDFs are both supported.
 
 ## Development
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'
-pytest                      # classic and Connect sessions
+SPARK_MODE=classic pytest   # classic session
+SPARK_MODE=connect pytest   # Spark Connect session
 black --line-length 100 .
 ```
 

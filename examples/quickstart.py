@@ -12,7 +12,9 @@ or against Databricks serverless by replacing the session setup with::
 
 from pyspark.sql import SparkSession
 
-from elementwise_udf import elementwise_udf, functions as F
+# Aliased to eudf so it is never confused with pyspark.sql.functions.udf; this
+# one additionally works inside a higher-order function's lambda.
+from elementwise_udf import udf as eudf, functions as F
 
 spark = SparkSession.builder.master("local[2]").getOrCreate()
 spark.sparkContext.setLogLevel("ERROR")
@@ -23,12 +25,12 @@ df = spark.createDataFrame([([1, 2, 3],)], ["values"])
 df.select(F.transform("values", lambda x: x + 1).alias("result")).show()
 
 
-@elementwise_udf("long")
+@eudf("long")
 def plus_one(x):
     return x + 1
 
 
-# An ordinary UDF call, exactly as with @udf("long").
+# An ordinary UDF call, exactly as with pyspark.sql.functions.udf("long").
 spark.range(1).select(plus_one(F.lit(1))).show()
 
 # The same native higher-order function, now with the Python UDF inside it.

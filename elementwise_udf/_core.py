@@ -7,12 +7,13 @@ Spark rejects a Python UDF in a higher-order function's lambda
     F.transform("values", lambda x: plus_one(x))
     # [UNSUPPORTED_FEATURE.LAMBDA_FUNCTION_WITH_PYTHON_UDF]
 
-Declare the UDF with :func:`elementwise_udf`, and import ``functions`` from here
-instead of from ``pyspark.sql``. The higher-order call then works as written::
+Declare the UDF with this module's :func:`udf`, and import ``functions`` from
+here instead of from ``pyspark.sql``. The higher-order call then works as
+written::
 
-    from elementwise_udf import elementwise_udf, functions as F
+    from elementwise_udf import udf, functions as F
 
-    @elementwise_udf("long")
+    @udf("long")
     def plus_one(x):
         return x + 1
 
@@ -80,7 +81,7 @@ plain PySpark has for ``if col > 1``. Use ``F.when(...)`` instead.
 
 ``functions`` is a transparent proxy: every attribute is forwarded to
 ``pyspark.sql.functions`` untouched, nothing in PySpark is patched, and lambdas
-that use no ``elementwise_udf`` are passed straight through.
+that use no element-wise UDF are passed straight through.
 
 Works on classic PySpark and on Spark Connect / Databricks Connect (serverless).
 
@@ -93,13 +94,16 @@ import inspect
 import itertools
 import types
 import warnings
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from pyspark.sql import Column
 from pyspark.sql import functions as _F
 from pyspark.sql.types import ArrayType, DataType, IntegerType
 
-__all__ = ["elementwise_udf", "functions"]
+if TYPE_CHECKING:
+    from pyspark.sql._typing import DataTypeOrString
+
+__all__ = ["udf", "functions"]
 
 # ``filter`` returns the input elements; every other array higher-order function
 # returns the lambda's values. Its lambda is only a predicate, so the elements
@@ -176,19 +180,44 @@ _direct = False
 class _ElementwiseUDF:
     """A Python UDF usable both normally and inside a higher-order function."""
 
-    def __init__(self, func: Callable[..., Any], returnType: Union[str, DataType]):
+    def __init__(
+        self,
+        func: Callable[..., Any],
+        returnType: Union[str, DataType],
+        useArrow: Optional[bool] = None,
+    ):
         self.func = func
         self._returnType = returnType
+        self._useArrow = useArrow
         self._scalar: Optional[Any] = None
         functools.update_wrapper(self, func)
 
     @property
     def scalar(self) -> Any:
-        # Built on first use: a DDL return type is parsed against the active
-        # session, which need not exist when the decorator runs.
+        """The plain ``pyspark.sql.functions.udf`` underneath.
+
+        Built on first use, because a DDL return type is parsed against the
+        active session, which need not exist when the decorator runs. Useful
+        directly for anything wanting a genuine PySpark UDF object, such as
+        ``spark.udf.register("name", my_udf.scalar)``.
+        """
         if self._scalar is None:
-            self._scalar = _F.udf(self.func, self._returnType)
+            self._scalar = _F.udf(self.func, self._returnType, useArrow=self._useArrow)
         return self._scalar
+
+    @property
+    def evalType(self) -> int:
+        return self.scalar.evalType
+
+    @property
+    def deterministic(self) -> bool:
+        return self.scalar.deterministic
+
+    def asNondeterministic(self) -> "_ElementwiseUDF":
+        """Mark the UDF nondeterministic, as ``pyspark``'s own UDFs allow."""
+        other = _ElementwiseUDF(self.func, self._returnType, self._useArrow)
+        other._scalar = self.scalar.asNondeterministic()
+        return other
 
     @property
     def returnType(self) -> DataType:
@@ -211,12 +240,24 @@ class _ElementwiseUDF:
         bound.apply_defaults()
         return tuple(bound.arguments[p] for p in bound.arguments)
 
-    def over_array(self, arrays: Sequence[Column], consts: Sequence[Any], plan: Sequence[int]):
+    def over_array(
+        self,
+        arrays: Sequence[Column],
+        consts: Sequence[Any],
+        plan: Sequence[int],
+        length_of: Optional[Column] = None,
+    ):
         """Rebuild as an ``array<returnType>`` UDF looping over whole arrays.
 
-        ``plan`` gives, per argument, which array it comes from, or ``-1`` for a
-        constant column that does not vary across the loop.
+        ``plan`` gives, per argument, which array it comes from, or a negative
+        index into ``consts`` for an argument that does not vary across the loop.
+        ``length_of`` supplies the loop length when *every* argument is constant
+        -- ``lambda x: my_udf(F.lit(1))`` still has to yield one result per
+        element -- and is then iterated only to count.
         """
+        if not arrays and length_of is not None:
+            arrays = [length_of]
+            plan = [p for p in plan]  # unchanged: nothing refers to slot 0
         n = len(arrays)
         plan = list(plan)
         # Bind the plain function: closing over ``self`` would pull the
@@ -228,6 +269,8 @@ class _ElementwiseUDF:
             if any(a is None for a in got):
                 return None
             out = []
+            # ``plan`` may refer to no array at all, in which case the arrays
+            # above serve only to fix how many results to produce.
             for elems in itertools.zip_longest(*got):
                 # A negative plan entry indexes the constants from the end:
                 # -1 -> const_vals[-1] is wrong, so map it explicitly.
@@ -245,25 +288,44 @@ class _ElementwiseUDF:
         return array_udf(*arrays, *consts)
 
 
-def elementwise_udf(returnType: Union[str, DataType] = "string"):
+def udf(
+    f: Optional[Union[Callable[..., Any], "DataTypeOrString"]] = None,
+    returnType: "DataTypeOrString" = "string",
+    *,
+    useArrow: Optional[bool] = None,
+) -> Any:
     """Create a Python UDF that also works inside a higher-order function.
 
-    A drop-in for ``pyspark.sql.functions.udf``; ``returnType`` is the *element*
-    return type::
+    A drop-in replacement for :func:`pyspark.sql.functions.udf`, accepting every
+    form it does -- ``returnType`` is the *element* return type::
 
-        @elementwise_udf("long")
+        from elementwise_udf import udf, functions as F
+
+        @udf("long")                       # decorator with a return type
         def plus_one(x):
             return x + 1
 
-    Needs the :data:`functions` proxy from this module for the higher-order
-    rewrite. Ordinary use (``plus_one(F.lit(1))``) is unaffected.
+        @udf                               # bare decorator, returnType="string"
+        def stringify(x):
+            return str(x)
+
+        plus_one = udf(lambda x: x + 1, "long")     # called directly
+        arrow_udf = udf(lambda x: x + 1, "long", useArrow=True)
+
+        df.select(F.transform("values", lambda x: plus_one(x)))
+
+    The higher-order rewrite needs the :data:`functions` proxy from this module;
+    ordinary use (``plus_one(F.lit(1))``) is unaffected either way. For SQL
+    registration, hand Spark the real UDF underneath::
+
+        spark.udf.register("plus_one", plus_one.scalar)
     """
-    if callable(returnType) and not isinstance(returnType, (str, DataType)):
-        raise TypeError(
-            "elementwise_udf must be called with a return type, as in "
-            "@elementwise_udf('long'), not applied directly to a function"
-        )
-    return lambda func: _ElementwiseUDF(func, returnType)
+    # ``udf(returnType)``/``@udf(returnType)``: the single argument is a type.
+    if f is None or isinstance(f, (str, DataType)):
+        chosen = returnType if f is None else f
+        return functools.partial(_ElementwiseUDF, returnType=chosen, useArrow=useArrow)
+    # ``udf(func, returnType)`` or a bare ``@udf``.
+    return _ElementwiseUDF(f, returnType, useArrow)
 
 
 def _run(f: Callable, rec: _Recorder, mode: str, slots: Sequence[Column]) -> Any:
@@ -372,7 +434,9 @@ def _rewrite(name: str, args: Sequence[Any], fun_pos: int, f: Callable) -> Optio
                 # A constant with respect to the loop, e.g. a captured column.
                 plan.append(-1 - len(consts))
                 consts.append(arg)
-        mapped.append(udf.over_array(arrays, consts, plan))
+        # ``length_of`` matters only when nothing varies per element; the result
+        # must still be one value per element rather than a single null.
+        mapped.append(udf.over_array(arrays, consts, plan, length_of=cols[0]))
 
     # Carry the elements, the index and every precomputed UDF result together.
     fields = [c.alias(f"c{i}") for i, c in enumerate(cols)]
@@ -442,7 +506,7 @@ def _udf_arrays(
             else:
                 plan.append(-1 - len(consts))
                 consts.append(arg)
-        mapped.append(udf.over_array(arrays, consts, plan))
+        mapped.append(udf.over_array(arrays, consts, plan, length_of=sources[0]))
     return rec, mapped
 
 
@@ -615,12 +679,35 @@ def _rewrite_fold_in_python(
             acc = merge(acc, x)     # plus_one(acc) + x, in Python
 
     The lambda is called on plain Python values, with UDF calls executing
-    immediately rather than recording themselves. Only merge steps Python can
-    evaluate on its own work this way: a lambda needing Spark expressions
-    (``F.when``, column methods) raises inside the UDF rather than being silently
-    mis-evaluated. A ``finish`` lambda, if given, is applied to the final
+    immediately rather than recording themselves. That only works for merge steps
+    Python can evaluate on its own; a lambda mixing the UDF with Spark
+    expressions (``F.when``, column methods) cannot be replayed this way and is
+    reported instead. A ``finish`` lambda, if given, is applied to the final
     accumulator in the same call.
     """
+    init = args[1] if len(args) > 1 and not callable(args[1]) else _F.lit(None)
+    finish = next(
+        (a for i, a in enumerate(args) if i != fun_pos and callable(a) and i > fun_pos), None
+    )
+    # The merge step is reduced to plain Python functions here on the driver, so
+    # the closure shipped to the worker holds no Spark objects (a UDF wrapper
+    # carries a JVM handle that cloudpickle cannot serialize).
+    plain = _plain_lambda(f)
+    plain_finish = _plain_lambda(finish) if finish is not None else None
+    if not _runs_in_plain_python(plain, plain_finish):
+        raise TypeError(
+            f"{name}: {udf.func.__name__!r} is applied to the accumulator and the "
+            "merge step also uses Spark expressions (F.when, column operators, "
+            "...). The accumulator only exists between fold steps, so it cannot "
+            "be precomputed, and writing the fold out longhand duplicates the "
+            "accumulator once per step -- the expression tree doubles each time, "
+            "which Spark Connect cannot even serialize. Write the merge step in "
+            "plain Python instead, so the whole fold can run in one call:\n"
+            "    lambda acc, x: my_udf(acc) + x            # supported\n"
+            "    lambda acc, x: F.when(my_udf(acc) > 2, 1) # not supported\n"
+            "or apply the UDF to the element, which stays on the fast path."
+        )
+
     warnings.warn(
         f"{name}: {udf.func.__name__!r} is applied to the accumulator, whose "
         "value only exists between fold steps, so the entire fold runs inside "
@@ -630,16 +717,6 @@ def _rewrite_fold_in_python(
         RuntimeWarning,
         stacklevel=4,
     )
-    init = args[1] if len(args) > 1 and not callable(args[1]) else _F.lit(None)
-    finish = next(
-        (a for i, a in enumerate(args) if i != fun_pos and callable(a) and i > fun_pos), None
-    )
-
-    # The merge step is reduced to plain Python functions here on the driver, so
-    # the closure shipped to the worker holds no Spark objects (a UDF wrapper
-    # carries a JVM handle that cloudpickle cannot serialize).
-    plain = _plain_lambda(f)
-    plain_finish = _plain_lambda(finish) if finish is not None else None
 
     def merge_in_python(values: Any, initial: Any) -> Any:
         if values is None:
@@ -659,6 +736,25 @@ def _rewrite_fold_in_python(
         deterministic=base.deterministic,
     )._wrapped()
     return fold_udf(col, init)
+
+
+def _runs_in_plain_python(merge: Callable, finish: Optional[Callable]) -> bool:
+    """Whether the merge step can be evaluated on plain Python numbers.
+
+    Probed by actually running it on sample values. A lambda that mixes the UDF
+    with Spark expressions -- ``F.when(plus_one(acc) > 2, ...)`` -- returns a
+    Column or raises here, which means the cheap replay above is not valid for it.
+    """
+    for candidate in (merge, finish):
+        if candidate is None:
+            continue
+        try:
+            probed = candidate(1, 1) if candidate is merge else candidate(1)
+        except Exception:
+            return False
+        if isinstance(probed, Column):
+            return False
+    return True
 
 
 def _plain_lambda(f: Callable) -> Callable:

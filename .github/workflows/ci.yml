@@ -1,4 +1,27 @@
-name: CI
+# SPDX-License-Identifier: Apache-2.0
+#
+# CI for elementwise-udf.
+#
+# Jobs:
+#   * test          - the suite against every supported Spark 4.x line, in BOTH
+#                     session modes (classic and Spark Connect). Classic and
+#                     Connect sessions cannot coexist in one process
+#                     ([SESSION_ALREADY_EXIST]), so the mode is a matrix axis
+#                     rather than a pytest parameter.
+#   * lint          - black --check over the whole repo
+#   * no-patching   - fails if the package ever mutates pyspark's modules; the
+#                     "nothing in PySpark is patched" promise is load-bearing,
+#                     since the proxy is only safe because it owns no global state
+#   * ascii-guard   - fails on non-ASCII in source, matching Spark's own rule
+#   * build-wheel   - builds sdist + wheel and asserts the wheel imports
+#   * example       - runs examples/quickstart.py end to end
+#
+# The Spark matrix is the point of this file: the rewrite reaches into PySpark
+# internals (UserDefinedFunction's constructor, ``_unwrapped``, ``_wrapped``), so
+# a minor release can break it without touching any public API. Every supported
+# line is therefore exercised, not just the newest.
+
+name: ci
 
 on:
   push:
@@ -7,14 +30,25 @@ on:
 
 jobs:
   test:
+    name: pytest (spark ${{ matrix.spark }}, ${{ matrix.spark-mode }}, py ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
-        # Classic and Connect sessions cannot coexist in one process, so each
-        # mode gets its own run.
+        # 4.0.x, 4.1.x and 4.2.x: the whole 4.x range the package claims.
+        # (4.1.0/4.1.1 were never usable; 4.1.3 is the latest 4.1.x.)
+        spark: ["4.0.4", "4.1.3", "4.2.0"]
         spark-mode: [classic, connect]
+        python-version: ["3.11"]
+        include:
+          # One extra Python on the newest Spark, to catch version-specific
+          # breakage in the internals this depends on.
+          - spark: "4.2.0"
+            spark-mode: classic
+            python-version: "3.12"
+          - spark: "4.2.0"
+            spark-mode: connect
+            python-version: "3.12"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -24,8 +58,132 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e '.[dev]'
-      - run: black --line-length 100 --check .
-      - run: pytest -q
+      - name: install
+        # Pin pyspark to the matrix version AFTER the editable install, so the
+        # dev extra cannot quietly upgrade it. The connect extra is always
+        # installed: the connect mode needs it, and it is harmless otherwise.
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install "pyspark[connect]==${{ matrix.spark }}"
+          python -c "import pyspark; print('pyspark', pyspark.__version__)"
+      - name: pytest
         env:
           SPARK_MODE: ${{ matrix.spark-mode }}
+        run: pytest -q --cov=elementwise_udf --cov-report=term-missing --cov-fail-under=85
+
+  lint:
+    name: black --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install "black==24.10.0"
+      - run: black --line-length 100 --check --diff .
+
+  no-patching:
+    name: pyspark is never patched
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - name: importing elementwise_udf must not mutate pyspark.sql.functions
+        # The whole design rests on the proxy being additive. If a future change
+        # reintroduces monkey-patching, this fails before it can ship.
+        run: |
+          python - <<'PY'
+          import pyspark.sql.functions as F
+
+          before = {name: getattr(F, name) for name in dir(F) if not name.startswith("__")}
+          import elementwise_udf  # noqa: F401
+          from elementwise_udf import functions, udf  # noqa: F401
+
+          changed = [
+              name for name, value in before.items() if getattr(F, name, None) is not value
+          ]
+          assert not changed, f"elementwise_udf mutated pyspark.sql.functions: {changed}"
+
+          # And the proxy forwards rather than shadowing: the real module keeps
+          # its own implementations, including the higher-order functions.
+          assert F.transform.__module__.startswith("pyspark."), F.transform.__module__
+          print("OK: pyspark.sql.functions untouched")
+          PY
+
+  ascii-guard:
+    name: source is ASCII-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: grep for non-ASCII in python sources
+        # Mirrors Apache Spark's own convention: typographic characters (em
+        # dashes, smart quotes) sneak in and break tooling. Markdown is prose and
+        # is exempt.
+        run: |
+          set -euo pipefail
+          if grep -rnP '[^\x00-\x7F]' --include='*.py' . ; then
+            echo "::error::non-ASCII characters in Python sources"
+            exit 1
+          fi
+          echo "OK: sources are ASCII-only"
+
+  build-wheel:
+    name: build wheel + assert importable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: build
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          pip install "build==1.2.2"
+          python -m build --sdist --wheel --outdir dist
+          ls -la dist
+      - name: install + import the wheel
+        run: |
+          set -euxo pipefail
+          pip install dist/elementwise_udf-*.whl
+          python -c "
+          from elementwise_udf import udf, functions
+          print('import OK', udf.__name__, type(functions).__name__)
+          "
+      - name: twine check (PyPI metadata + long-description render)
+        run: |
+          set -euxo pipefail
+          python -m pip install "twine>=6.1.0"
+          twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+  example:
+    name: examples/quickstart.py runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - name: run the quickstart
+        # Proves the README's headline snippet actually works, not just the
+        # tests' own phrasing of it.
+        run: python examples/quickstart.py

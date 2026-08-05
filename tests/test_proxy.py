@@ -6,10 +6,10 @@ completely unchanged, and PySpark itself must never be modified.
 
 import pyspark.sql.functions as real
 
-from elementwise_udf import elementwise_udf, functions as F
+from elementwise_udf import udf, functions as F
 
 
-@elementwise_udf("long")
+@udf("long")
 def plus_one(x):
     return x + 1
 

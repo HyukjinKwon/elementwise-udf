@@ -10,3 +10,6 @@ dist/
 spark-warehouse/
 derby.log
 metastore_db/
+.coverage
+coverage.xml
+htmlcov/
