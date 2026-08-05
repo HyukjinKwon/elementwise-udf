@@ -74,15 +74,47 @@ jobs:
         run: >
           pytest -q --cov=elementwise_udf --cov-branch
           --cov-report=term-missing --cov-report=xml --cov-fail-under=95
-      - name: Upload coverage to Codecov
-        # One representative cell only: every cell runs the same tests, so
-        # uploading all of them would just be noise. No token needed for a
-        # public repo; a failed upload must not fail the build.
+      # One representative cell publishes the badge: every cell runs the same
+      # tests, so the others would only overwrite the same number. Codecov is not
+      # used - it rejects tokenless uploads, so the badge sat at "unknown" while
+      # the step reported success. The number is instead read straight out of
+      # coverage.xml and written to a public Gist that shields.io renders.
+      - name: Read the coverage percentage
+        id: coverage
         if: matrix.spark == '4.2.0' && matrix.spark-mode == 'classic' && matrix.python-version == '3.11'
-        uses: codecov/codecov-action@v4
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse("coverage.xml").getroot()
+          # coverage.py writes line-rate as a 0..1 fraction on the root element.
+          percent = round(float(root.get("line-rate", 0)) * 100)
+          colour = (
+              "brightgreen" if percent >= 95
+              else "green" if percent >= 90
+              else "yellow" if percent >= 75
+              else "orange" if percent >= 50
+              else "red"
+          )
+          print(f"percent={percent}")
+          print(f"colour={colour}")
+          PY
+      - name: Publish the coverage badge
+        # Only on a push to main: a pull request from a fork has no access to the
+        # secret, and a PR should not move the badge for the default branch.
+        if: >-
+          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          matrix.spark == '4.2.0' && matrix.spark-mode == 'classic' &&
+          matrix.python-version == '3.11'
+        uses: schneegans/dynamic-badges-action@v1.7.0
         with:
-          files: ./coverage.xml
-          fail_ci_if_error: false
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: eda13e213561c3290a03979e3d75bed1
+          filename: coverage.json
+          label: coverage
+          message: ${{ steps.coverage.outputs.percent }}%
+          color: ${{ steps.coverage.outputs.colour }}
 
   lint:
     name: black --check

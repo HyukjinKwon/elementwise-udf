@@ -1,7 +1,7 @@
 # elementwise-udf
 
 [![ci](https://github.com/HyukjinKwon/elementwise-udf/actions/workflows/ci.yml/badge.svg)](https://github.com/HyukjinKwon/elementwise-udf/actions/workflows/ci.yml)
-[![coverage](https://codecov.io/gh/HyukjinKwon/elementwise-udf/branch/main/graph/badge.svg)](https://codecov.io/gh/HyukjinKwon/elementwise-udf)
+[![coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/HyukjinKwon/eda13e213561c3290a03979e3d75bed1/raw/coverage.json)](https://github.com/HyukjinKwon/elementwise-udf/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/elementwise-udf.svg)](https://pypi.org/project/elementwise-udf/)
 [![Python](https://img.shields.io/pypi/pyversions/elementwise-udf.svg)](https://pypi.org/project/elementwise-udf/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
